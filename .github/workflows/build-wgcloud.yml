@@ -36,30 +36,52 @@ jobs:
           echo "=== Maven 版本 ==="
           mvn -version
       
-      - name: Restore original pom.xml (if needed)
+      - name: Remove Oracle and SQL Server dependencies from pom.xml
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           cd wgcloud-${VERSION}/wgcloud-server
-          # 如果有备份，恢复它
-          if [ -f pom.xml.bak ]; then
-            cp pom.xml.bak pom.xml
-            echo "✅ 已恢复原始 pom.xml"
-          else
-            echo "无需恢复，使用原始文件"
-          fi
+          
+          # 显示原始依赖
+          echo "=== 原始依赖 (包含 Oracle/SQL Server) ==="
+          grep -B 2 -A 4 "ojdbc\|sqljdbc" pom.xml || echo "未找到相关依赖"
+          
+          # 使用 sed 删除包含这些依赖的整个 dependency 块
+          # 方法：匹配 <dependency> 到 </dependency>，如果中间包含目标关键词，则删除整个块
+          sed -i '/<dependency>/,/<\/dependency>/{
+            /ojdbc/{
+              :a
+              N
+              /<\/dependency>/!ba
+              d
+            }
+            /sqljdbc/{
+              :b
+              N
+              /<\/dependency>/!bb
+              d
+            }
+            /oracle/{
+              :c
+              N
+              /<\/dependency>/!bc
+              d
+            }
+          }' pom.xml
+          
+          # 验证是否删除成功
+          echo "=== 修改后检查 ==="
+          grep -i "ojdbc\|sqljdbc\|oracle" pom.xml || echo "✅ 所有相关依赖已删除"
+          
+          # 检查 XML 格式是否完整
+          echo "=== 检查 pom.xml 前20行 ==="
+          head -20 pom.xml
       
-      - name: Build WGCLOUD Server with dependency exclusions
+      - name: Build WGCLOUD Server
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           cd wgcloud-${VERSION}/wgcloud-server
-          
           echo "开始编译 WGCLOUD Server..."
-          
-          # 使用 Maven 排除不需要的依赖
-          mvn clean package -DskipTests \
-            -DexcludeGroupIds=com.oracle,com.microsoft.sqlserver \
-            -DexcludeArtifactIds=ojdbc6,sqljdbc4
-          
+          mvn clean package -DskipTests
           echo "✅ 编译完成"
           echo "=== 编译产物 ==="
           ls -la target/
