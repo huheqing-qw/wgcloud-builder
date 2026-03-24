@@ -31,7 +31,22 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y maven openjdk-8-jdk-headless
-          sudo update-alternatives --set java /usr/lib/jvm/java-8-openjdk-arm64/bin/java
+          
+          # 查找 Java 8 的实际路径
+          echo "=== 查找 Java 8 路径 ==="
+          JAVA8_PATH=$(dirname $(dirname $(readlink -f $(which java))))
+          echo "Java 路径: $JAVA8_PATH"
+          
+          # 或者使用 update-java-alternatives
+          echo "=== 可用的 Java 版本 ==="
+          update-java-alternatives -l || true
+          
+          # 设置 Java 8 为默认（如果存在）
+          if update-java-alternatives -l | grep -q "java-1.8"; then
+            JAVA8=$(update-java-alternatives -l | grep "java-1.8" | awk '{print $1}')
+            sudo update-java-alternatives --set $JAVA8
+          fi
+          
           echo "=== Java 版本 ==="
           java -version
           echo "=== Maven 版本 ==="
@@ -42,22 +57,25 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           cd wgcloud-${VERSION}/wgcloud-server
           
-          echo "=== 原始 pom.xml 依赖 ==="
-          grep -A 2 "oracle\|sqljdbc\|ojdbc" pom.xml || echo "未找到相关依赖"
+          echo "=== 移除 Oracle 和 SQL Server 依赖 ==="
           
           # 备份
           cp pom.xml pom.xml.bak
           
-          # 移除 Oracle 和 SQL Server 依赖的 <dependency> 块
-          # 使用更精确的方法：删除包含 oracle/sqljdbc 的整个 dependency 块
+          # 删除包含 oracle 或 sqljdbc 的整个 dependency 块
+          # 使用更简单的方法：删除包含这些关键词的行及其上下文
           sed -i '/<dependency>/,/<\/dependency>/{
             /oracle/d
-            /sqljdbc/d
             /ojdbc/d
+            /sqljdbc/d
           }' pom.xml
           
-          echo "=== 修改后检查 ==="
-          grep -A 2 "oracle\|sqljdbc\|ojdbc" pom.xml || echo "✅ 依赖已移除"
+          # 额外清理可能残留的空白行
+          sed -i '/^[[:space:]]*$/d' pom.xml
+          
+          echo "✅ 依赖清理完成"
+          echo "检查是否还有残留:"
+          grep -i "oracle\|ojdbc\|sqljdbc" pom.xml || echo "✅ 无残留"
       
       - name: Build WGCLOUD Server
         run: |
@@ -74,13 +92,16 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           cd wgcloud-${VERSION}/wgcloud-server/target
-          JAR_FILE=$(find . -name "*.jar" -type f | grep -v original | head -1)
+          JAR_FILE=$(ls *.jar 2>/dev/null | grep -v original | head -1)
           if [ -z "$JAR_FILE" ]; then
             echo "❌ 未找到编译后的 jar 文件"
+            echo "target 目录内容:"
+            ls -la
             exit 1
           fi
           echo "jar_file=${JAR_FILE}" >> $GITHUB_OUTPUT
           echo "找到 jar 文件: ${JAR_FILE}"
+          file ${JAR_FILE}
       
       - name: Prepare Docker build context
         run: |
@@ -102,6 +123,7 @@ jobs:
           
           echo "✅ 构建上下文已准备"
           ls -la docker-build/
+          file docker-build/wgcloud-server.jar
       
       - name: Create Dockerfile
         run: |
@@ -134,6 +156,17 @@ jobs:
           cd docker-build
           docker build -t wgcloud-server:${VERSION} -t wgcloud-server:latest .
           docker images
+      
+      - name: Test container
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          docker run -d --name test-wgcloud -p 19999:9999 wgcloud-server:${VERSION}
+          echo "等待测试容器启动..."
+          sleep 15
+          echo "=== 测试容器日志 ==="
+          docker logs test-wgcloud --tail 30
+          docker stop test-wgcloud
+          docker rm test-wgcloud
       
       - name: Save and compress
         run: |
