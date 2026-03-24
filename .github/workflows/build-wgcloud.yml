@@ -30,105 +30,36 @@ jobs:
       - name: Install Maven and JDK 8
         run: |
           sudo apt-get update
-          sudo apt-get install -y maven openjdk-8-jdk-headless python3
+          sudo apt-get install -y maven openjdk-8-jdk-headless
           echo "=== Java 版本 ==="
           java -version
           echo "=== Maven 版本 ==="
           mvn -version
       
-      - name: Remove Oracle and SQL Server dependencies with Python
+      - name: Restore original pom.xml (if needed)
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           cd wgcloud-${VERSION}/wgcloud-server
-          
-          # 创建 Python 脚本来处理 pom.xml
-          cat > fix_pom.py << 'PYTHON_SCRIPT'
-          import xml.etree.ElementTree as ET
-          import sys
-          
-          # 解析 pom.xml
-          try:
-              tree = ET.parse('pom.xml')
-              root = tree.getroot()
-              
-              # 查找命名空间（Maven POM 通常没有命名空间）
-              # 但有时会有 xmlns，我们需要处理
-              ns = {'mvn': 'http://maven.apache.org/POM/4.0.0'}
-              
-              # 尝试获取 dependencies 节点（考虑命名空间）
-              dependencies = None
-              if root.tag.endswith('project'):
-                  # 查找 dependencies 节点
-                  for elem in root:
-                      if elem.tag.endswith('dependencies'):
-                          dependencies = elem
-                          break
-              
-              if dependencies is None:
-                  print("未找到 dependencies 节点")
-                  sys.exit(1)
-              
-              # 收集需要删除的 dependency 节点
-              to_remove = []
-              for dep in dependencies:
-                  groupId = None
-                  artifactId = None
-                  for child in dep:
-                      if child.tag.endswith('groupId'):
-                          groupId = child.text
-                      elif child.tag.endswith('artifactId'):
-                          artifactId = child.text
-                  
-                  # 检查是否是需要删除的依赖
-                  if groupId and artifactId:
-                      if ('oracle' in groupId.lower() or 
-                          'oracle' in artifactId.lower() or
-                          'ojdbc' in artifactId.lower() or
-                          'microsoft' in groupId.lower() or
-                          'sqljdbc' in artifactId.lower()):
-                          to_remove.append(dep)
-                          print(f"标记删除: {groupId}:{artifactId}")
-                  
-                  # 特殊处理：如果 groupId 为空但 artifactId 包含 sqljdbc
-                  if not groupId and artifactId and 'sqljdbc' in artifactId.lower():
-                      to_remove.append(dep)
-                      print(f"标记删除 (空groupId): {artifactId}")
-              
-              # 删除标记的依赖
-              for dep in to_remove:
-                  dependencies.remove(dep)
-                  print("已删除一个依赖")
-              
-              # 保存修改
-              tree.write('pom.xml', encoding='UTF-8', xml_declaration=True)
-              print("✅ pom.xml 已更新")
-              
-          except Exception as e:
-              print(f"错误: {e}")
-              sys.exit(1)
-          PYTHON_SCRIPT
-          
-          # 显示原始 pom.xml 的依赖部分
-          echo "=== 原始依赖 (前 50 行) ==="
-          grep -A 2 -B 1 "<dependency>" pom.xml | head -50
-          
-          # 运行 Python 脚本
-          python3 fix_pom.py
-          
-          # 显示修改后的依赖部分
-          echo "=== 修改后依赖 (前 50 行) ==="
-          grep -A 2 -B 1 "<dependency>" pom.xml | head -50
-          
-          # 验证是否还有残留
-          echo "=== 检查残留 ==="
-          grep -i "oracle\|ojdbc\|sqljdbc" pom.xml || echo "✅ 无残留"
+          # 如果有备份，恢复它
+          if [ -f pom.xml.bak ]; then
+            cp pom.xml.bak pom.xml
+            echo "✅ 已恢复原始 pom.xml"
+          else
+            echo "无需恢复，使用原始文件"
+          fi
       
-      - name: Build WGCLOUD Server
+      - name: Build WGCLOUD Server with dependency exclusions
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           cd wgcloud-${VERSION}/wgcloud-server
+          
           echo "开始编译 WGCLOUD Server..."
-          mvn clean package -DskipTests
+          
+          # 使用 Maven 排除不需要的依赖
+          mvn clean package -DskipTests \
+            -DexcludeGroupIds=com.oracle,com.microsoft.sqlserver \
+            -DexcludeArtifactIds=ojdbc6,sqljdbc4
+          
           echo "✅ 编译完成"
           echo "=== 编译产物 ==="
           ls -la target/
