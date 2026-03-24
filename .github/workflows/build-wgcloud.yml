@@ -30,52 +30,40 @@ jobs:
       - name: Install Maven and JDK 8
         run: |
           sudo apt-get update
-          sudo apt-get install -y maven openjdk-8-jdk-headless
-          
-          # 查找 Java 8 的实际路径
-          echo "=== 查找 Java 8 路径 ==="
-          JAVA8_PATH=$(dirname $(dirname $(readlink -f $(which java))))
-          echo "Java 路径: $JAVA8_PATH"
-          
-          # 或者使用 update-java-alternatives
-          echo "=== 可用的 Java 版本 ==="
-          update-java-alternatives -l || true
-          
-          # 设置 Java 8 为默认（如果存在）
-          if update-java-alternatives -l | grep -q "java-1.8"; then
-            JAVA8=$(update-java-alternatives -l | grep "java-1.8" | awk '{print $1}')
-            sudo update-java-alternatives --set $JAVA8
-          fi
-          
+          sudo apt-get install -y maven openjdk-8-jdk-headless xmlstarlet
           echo "=== Java 版本 ==="
           java -version
           echo "=== Maven 版本 ==="
           mvn -version
+          echo "=== xmlstarlet 版本 ==="
+          xmlstarlet --version
       
       - name: Remove Oracle and SQL Server dependencies
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           cd wgcloud-${VERSION}/wgcloud-server
           
-          echo "=== 移除 Oracle 和 SQL Server 依赖 ==="
+          echo "=== 原始 pom.xml (依赖部分) ==="
+          grep -A 5 -B 5 "oracle\|sqljdbc\|ojdbc" pom.xml || echo "未找到相关依赖"
           
           # 备份
           cp pom.xml pom.xml.bak
           
-          # 删除包含 oracle 或 sqljdbc 的整个 dependency 块
-          # 使用更简单的方法：删除包含这些关键词的行及其上下文
-          sed -i '/<dependency>/,/<\/dependency>/{
-            /oracle/d
-            /ojdbc/d
-            /sqljdbc/d
-          }' pom.xml
+          # 使用 xmlstarlet 移除包含 oracle/sqljdbc/ojdbc 的 dependency 节点
+          # 注意：xmlstarlet 对命名空间敏感，需要处理
           
-          # 额外清理可能残留的空白行
-          sed -i '/^[[:space:]]*$/d' pom.xml
+          # 先移除 oracle 相关
+          xmlstarlet ed -L -d "//dependencies/dependency[contains(groupId, 'oracle') or contains(artifactId, 'oracle') or contains(artifactId, 'ojdbc')]" pom.xml
           
-          echo "✅ 依赖清理完成"
-          echo "检查是否还有残留:"
-          grep -i "oracle\|ojdbc\|sqljdbc" pom.xml || echo "✅ 无残留"
+          # 再移除 sqlserver 相关
+          xmlstarlet ed -L -d "//dependencies/dependency[contains(groupId, 'microsoft') or contains(artifactId, 'sqljdbc')]" pom.xml
+          
+          echo "=== 修改后检查 ==="
+          grep -i "oracle\|ojdbc\|sqljdbc" pom.xml || echo "✅ 依赖已成功移除"
+          
+          # 验证 XML 格式是否正确
+          echo "=== 验证 XML 格式 ==="
+          xmlstarlet val pom.xml && echo "✅ XML 格式正确" || echo "⚠️ XML 格式有问题"
       
       - name: Build WGCLOUD Server
         run: |
