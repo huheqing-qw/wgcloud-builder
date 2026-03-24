@@ -1,4 +1,4 @@
-name: Build WGCLOUD ARM64 (Ignore Missing Dependencies)
+name: Build WGCLOUD ARM64 (Debug)
 
 on:
   workflow_dispatch:
@@ -24,6 +24,7 @@ jobs:
           wget https://github.com/tianshiyeben/wgcloud/archive/refs/tags/v${VERSION}.tar.gz
           tar -xzf v${VERSION}.tar.gz
           echo "✅ 源码下载完成"
+          ls -la wgcloud-${VERSION}/
       
       - name: Install Maven and JDK 8
         run: |
@@ -32,52 +33,37 @@ jobs:
           java -version
           mvn -version
       
-      - name: Create Maven settings to ignore missing deps
-        run: |
-          cat > settings.xml << 'EOF'
-          <settings>
-            <profiles>
-              <profile>
-                <id>allow-missing</id>
-                <properties>
-                  <maven.resolver.transport>wagon</maven.resolver.transport>
-                </properties>
-              </profile>
-            </profiles>
-            <activeProfiles>
-              <activeProfile>allow-missing</activeProfile>
-            </activeProfiles>
-          </settings>
-          EOF
-      
-      - name: Build with missing dependencies ignored
+      - name: Try to compile and capture full log
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           cd wgcloud-${VERSION}/wgcloud-server
           
-          # 尝试编译，忽略缺失的依赖
-          mvn clean package -DskipTests \
-            -Dmaven.wagon.http.ssl.insecure=true \
-            -Dmaven.resolver.transport=wagon \
-            --settings ../../settings.xml \
-            || echo "编译失败，但继续"
-      
-      - name: Check if jar exists
-        id: check_jar
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          cd wgcloud-${VERSION}/wgcloud-server/target
-          if ls *.jar 2>/dev/null | grep -v original; then
-            echo "jar_exists=true" >> $GITHUB_OUTPUT
-            echo "✅ jar 文件存在"
+          echo "=== 开始编译，显示完整错误 ==="
+          
+          # 尝试编译并保存完整日志
+          mvn clean package -DskipTests -e -X 2>&1 | tee compile.log
+          
+          # 检查编译是否成功
+          if [ -d target ] && [ -n "$(ls target/*.jar 2>/dev/null | grep -v original)" ]; then
+            echo "✅ 编译成功"
+            echo "compiled=true" >> $GITHUB_OUTPUT
           else
-            echo "jar_exists=false" >> $GITHUB_OUTPUT
-            echo "❌ 没有 jar 文件"
-            ls -la
+            echo "❌ 编译失败"
+            echo "compiled=false" >> $GITHUB_OUTPUT
+            echo "=== 最后 100 行错误日志 ==="
+            tail -100 compile.log
           fi
       
+      - name: Upload compile log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compile-log
+          path: wgcloud-*/wgcloud-server/compile.log
+          retention-days: 7
+      
       - name: Prepare Docker context
-        if: steps.check_jar.outputs.jar_exists == 'true'
+        if: steps.try.outputs.compiled == 'true'
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           mkdir -p docker-build
@@ -86,50 +72,32 @@ jobs:
           mkdir -p docker-build/logs docker-build/data
       
       - name: Create Dockerfile
-        if: steps.check_jar.outputs.jar_exists == 'true'
+        if: steps.try.outputs.compiled == 'true'
         run: |
           cat > docker-build/Dockerfile << 'EOF'
           FROM arm64v8/openjdk:8-jdk-slim
-          
           WORKDIR /wgcloud-server
-          
           COPY wgcloud-server.jar /wgcloud-server/
           COPY config /wgcloud-server/config/
-          
           RUN mkdir -p /wgcloud-server/logs /wgcloud-server/data
-          
-          ENV TZ=Asia/Shanghai
-          RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
-          
           EXPOSE 9997 9998 9999
-          
           CMD ["java", "-jar", "/wgcloud-server/wgcloud-server.jar", "--spring.config.location=/wgcloud-server/config/application.yml"]
           EOF
       
       - name: Build Docker image
-        if: steps.check_jar.outputs.jar_exists == 'true'
+        if: steps.try.outputs.compiled == 'true'
         run: |
           cd docker-build
           docker build -t wgcloud-server:latest .
       
       - name: Save and upload
-        if: steps.check_jar.outputs.jar_exists == 'true'
+        if: steps.try.outputs.compiled == 'true'
         run: |
           docker save wgcloud-server:latest | gzip > wgcloud-server-arm64.tar.gz
-          ls -lh wgcloud-server-arm64.tar.gz
       
       - name: Upload artifact
-        if: steps.check_jar.outputs.jar_exists == 'true'
+        if: steps.try.outputs.compiled == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: wgcloud-server-arm64
           path: wgcloud-server-arm64.tar.gz
-          retention-days: 30
-      
-      - name: Upload source code if build failed
-        if: steps.check_jar.outputs.jar_exists == 'false'
-        uses: actions/upload-artifact@v4
-        with:
-          name: wgcloud-source
-          path: wgcloud-*/
-          retention-days: 7
