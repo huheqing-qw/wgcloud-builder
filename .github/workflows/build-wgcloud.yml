@@ -1,4 +1,4 @@
-name: Build WGCLOUD ARM64 Image
+name: Build WGCLOUD ARM64 Image from Release
 
 on:
   workflow_dispatch:
@@ -13,35 +13,34 @@ jobs:
     runs-on: ubuntu-24.04-arm
     
     steps:
-      - name: Checkout WGCLOUD source code
-        uses: actions/checkout@v4
-        with:
-          repository: tianshiyeben/wgcloud
-          fetch-depth: 1
-      
-      - name: Verify version exists
+      - name: Set version
         id: version
         run: |
           VERSION="${{ github.event.inputs.version }}"
-          SOURCE_DIR="wgcloud-v${VERSION}"
-          
-          if [ ! -d "${SOURCE_DIR}" ]; then
-            echo "❌ 错误: 版本 ${VERSION} 不存在"
-            echo "可用的版本:"
-            ls -d wgcloud-v* 2>/dev/null || echo "未找到任何版本"
-            exit 1
-          fi
-          
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "✅ 使用版本: ${VERSION}"
+          echo "✅ 构建版本: v${VERSION}"
+      
+      - name: Download WGCLOUD release source
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          # 下载 Release 源码包
+          wget https://github.com/tianshiyeben/wgcloud/archive/refs/tags/v${VERSION}.tar.gz
+          tar -xzf v${VERSION}.tar.gz
+          echo "✅ 源码下载并解压完成"
+          ls -la wgcloud-${VERSION}/
       
       - name: Prepare build context
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          WGCLOUD_DIR="wgcloud-v${VERSION}"
+          SOURCE_DIR="wgcloud-${VERSION}"
           
+          # 创建构建目录
           mkdir -p docker-build
-          cp -r ${WGCLOUD_DIR}/server/* docker-build/
+          
+          # 复制 server 目录（Release 包中 server 在根目录）
+          cp -r ${SOURCE_DIR}/server/* docker-build/
+          
+          # 创建数据目录
           mkdir -p docker-build/data docker-build/logs
           
           echo "✅ 构建上下文已准备"
@@ -67,7 +66,6 @@ jobs:
           EOF
           
           echo "✅ Dockerfile 已创建"
-          cat docker-build/Dockerfile
       
       - name: Build Docker image
         run: |
