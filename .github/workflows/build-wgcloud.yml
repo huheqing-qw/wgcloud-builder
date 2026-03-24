@@ -27,12 +27,37 @@ jobs:
           tar -xzf v${VERSION}.tar.gz
           echo "✅ 源码下载完成"
       
-      - name: Install Maven and JDK
+      - name: Install Maven and JDK 8
         run: |
           sudo apt-get update
           sudo apt-get install -y maven openjdk-8-jdk-headless
+          sudo update-alternatives --set java /usr/lib/jvm/java-8-openjdk-arm64/bin/java
+          echo "=== Java 版本 ==="
           java -version
+          echo "=== Maven 版本 ==="
           mvn -version
+      
+      - name: Remove Oracle and SQL Server dependencies
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          cd wgcloud-${VERSION}/wgcloud-server
+          
+          echo "=== 原始 pom.xml 依赖 ==="
+          grep -A 2 "oracle\|sqljdbc\|ojdbc" pom.xml || echo "未找到相关依赖"
+          
+          # 备份
+          cp pom.xml pom.xml.bak
+          
+          # 移除 Oracle 和 SQL Server 依赖的 <dependency> 块
+          # 使用更精确的方法：删除包含 oracle/sqljdbc 的整个 dependency 块
+          sed -i '/<dependency>/,/<\/dependency>/{
+            /oracle/d
+            /sqljdbc/d
+            /ojdbc/d
+          }' pom.xml
+          
+          echo "=== 修改后检查 ==="
+          grep -A 2 "oracle\|sqljdbc\|ojdbc" pom.xml || echo "✅ 依赖已移除"
       
       - name: Build WGCLOUD Server
         run: |
@@ -41,20 +66,38 @@ jobs:
           echo "开始编译 WGCLOUD Server..."
           mvn clean package -DskipTests
           echo "✅ 编译完成"
+          echo "=== 编译产物 ==="
           ls -la target/
+      
+      - name: Find jar file
+        id: jar
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          cd wgcloud-${VERSION}/wgcloud-server/target
+          JAR_FILE=$(find . -name "*.jar" -type f | grep -v original | head -1)
+          if [ -z "$JAR_FILE" ]; then
+            echo "❌ 未找到编译后的 jar 文件"
+            exit 1
+          fi
+          echo "jar_file=${JAR_FILE}" >> $GITHUB_OUTPUT
+          echo "找到 jar 文件: ${JAR_FILE}"
       
       - name: Prepare Docker build context
         run: |
           VERSION="${{ steps.version.outputs.version }}"
+          JAR_FILE="${{ steps.jar.outputs.jar_file }}"
+          
           mkdir -p docker-build
           
-          # 复制编译后的文件
-          cp -r wgcloud-${VERSION}/wgcloud-server/target/wgcloud-server-${VERSION}.jar docker-build/
-          cp -r wgcloud-${VERSION}/wgcloud-server/start.sh docker-build/ 2>/dev/null || true
-          cp -r wgcloud-${VERSION}/wgcloud-server/bin docker-build/ 2>/dev/null || true
-          cp -r wgcloud-${VERSION}/wgcloud-server/config docker-build/ 2>/dev/null || true
+          # 复制编译后的 jar 文件
+          cp wgcloud-${VERSION}/wgcloud-server/target/${JAR_FILE} docker-build/wgcloud-server.jar
           
-          # 创建必要目录
+          # 复制配置文件
+          if [ -d "wgcloud-${VERSION}/wgcloud-server/src/main/resources" ]; then
+            cp -r wgcloud-${VERSION}/wgcloud-server/src/main/resources docker-build/config
+          fi
+          
+          # 创建目录
           mkdir -p docker-build/logs docker-build/data
           
           echo "✅ 构建上下文已准备"
@@ -70,20 +113,16 @@ jobs:
           
           WORKDIR /wgcloud-server
           
-          # 复制编译好的 jar 文件
-          COPY *.jar /wgcloud-server/wgcloud-server.jar
-          
-          # 复制配置和脚本（如果存在）
+          COPY wgcloud-server.jar /wgcloud-server/
           COPY config /wgcloud-server/config/
-          COPY bin /wgcloud-server/bin/ 2>/dev/null || true
-          COPY start.sh /wgcloud-server/ 2>/dev/null || true
           
-          # 创建目录
           RUN mkdir -p /wgcloud-server/logs /wgcloud-server/data
+          
+          ENV TZ=Asia/Shanghai
+          RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
           
           EXPOSE 9997 9998 9999
           
-          # 启动命令
           CMD ["java", "-jar", "/wgcloud-server/wgcloud-server.jar", "--spring.config.location=/wgcloud-server/config/application.yml"]
           EOF
           
@@ -96,7 +135,7 @@ jobs:
           docker build -t wgcloud-server:${VERSION} -t wgcloud-server:latest .
           docker images
       
-      - name: Save and compress image
+      - name: Save and compress
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           docker save wgcloud-server:${VERSION} | gzip > wgcloud-server-${VERSION}-arm64-compiled.tar.gz
