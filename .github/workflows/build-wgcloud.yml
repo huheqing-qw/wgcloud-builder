@@ -1,4 +1,4 @@
-name: Build WGCLOUD ARM64 Image (Compiled)
+name: Build WGCLOUD ARM64 Image (Official Jar)
 
 on:
   workflow_dispatch:
@@ -20,104 +20,43 @@ jobs:
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "✅ 构建版本: v${VERSION}"
       
-      - name: Download WGCLOUD release source
+      - name: Download official WGCLOUD jar
         run: |
           VERSION="${{ steps.version.outputs.version }}"
+          # 下载官方编译好的 jar
+          wget https://github.com/tianshiyeben/wgcloud/releases/download/v${VERSION}/wgcloud-server-release.jar
+          echo "✅ 官方 jar 下载完成"
+          ls -la wgcloud-server-release.jar
+          file wgcloud-server-release.jar
+      
+      - name: Download WGCLOUD config files
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          # 下载源码包以获取配置文件
           wget https://github.com/tianshiyeben/wgcloud/archive/refs/tags/v${VERSION}.tar.gz
           tar -xzf v${VERSION}.tar.gz
           echo "✅ 源码下载完成"
       
-      - name: Install Maven and JDK 8
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y maven openjdk-8-jdk-headless
-          echo "=== Java 版本 ==="
-          java -version
-          echo "=== Maven 版本 ==="
-          mvn -version
-      
-      - name: Remove Oracle and SQL Server dependencies from pom.xml
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          cd wgcloud-${VERSION}/wgcloud-server
-          
-          # 显示原始依赖
-          echo "=== 原始依赖 (包含 Oracle/SQL Server) ==="
-          grep -B 2 -A 4 "ojdbc\|sqljdbc" pom.xml || echo "未找到相关依赖"
-          
-          # 使用 sed 删除包含这些依赖的整个 dependency 块
-          # 方法：匹配 <dependency> 到 </dependency>，如果中间包含目标关键词，则删除整个块
-          sed -i '/<dependency>/,/<\/dependency>/{
-            /ojdbc/{
-              :a
-              N
-              /<\/dependency>/!ba
-              d
-            }
-            /sqljdbc/{
-              :b
-              N
-              /<\/dependency>/!bb
-              d
-            }
-            /oracle/{
-              :c
-              N
-              /<\/dependency>/!bc
-              d
-            }
-          }' pom.xml
-          
-          # 验证是否删除成功
-          echo "=== 修改后检查 ==="
-          grep -i "ojdbc\|sqljdbc\|oracle" pom.xml || echo "✅ 所有相关依赖已删除"
-          
-          # 检查 XML 格式是否完整
-          echo "=== 检查 pom.xml 前20行 ==="
-          head -20 pom.xml
-      
-      - name: Build WGCLOUD Server
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          cd wgcloud-${VERSION}/wgcloud-server
-          echo "开始编译 WGCLOUD Server..."
-          mvn clean package -DskipTests
-          echo "✅ 编译完成"
-          echo "=== 编译产物 ==="
-          ls -la target/
-      
-      - name: Find jar file
-        id: jar
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          cd wgcloud-${VERSION}/wgcloud-server/target
-          JAR_FILE=$(ls *.jar 2>/dev/null | grep -v original | head -1)
-          if [ -z "$JAR_FILE" ]; then
-            echo "❌ 未找到编译后的 jar 文件"
-            echo "target 目录内容:"
-            ls -la
-            exit 1
-          fi
-          echo "jar_file=${JAR_FILE}" >> $GITHUB_OUTPUT
-          echo "找到 jar 文件: ${JAR_FILE}"
-      
       - name: Prepare Docker build context
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          JAR_FILE="${{ steps.jar.outputs.jar_file }}"
           
           mkdir -p docker-build
           
-          cp wgcloud-${VERSION}/wgcloud-server/target/${JAR_FILE} docker-build/wgcloud-server.jar
+          # 复制官方 jar
+          cp wgcloud-server-release.jar docker-build/wgcloud-server.jar
           
+          # 复制配置文件
           if [ -d "wgcloud-${VERSION}/wgcloud-server/src/main/resources" ]; then
             cp -r wgcloud-${VERSION}/wgcloud-server/src/main/resources docker-build/config
           fi
           
+          # 创建目录
           mkdir -p docker-build/logs docker-build/data
           
           echo "✅ 构建上下文已准备"
           ls -la docker-build/
+          file docker-build/wgcloud-server.jar
       
       - name: Create Dockerfile
         run: |
@@ -155,6 +94,7 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           docker run -d --name test-wgcloud -p 19999:9999 wgcloud-server:${VERSION}
+          echo "等待测试容器启动..."
           sleep 15
           echo "=== 测试容器日志 ==="
           docker logs test-wgcloud --tail 30
@@ -164,13 +104,13 @@ jobs:
       - name: Save and compress
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          docker save wgcloud-server:${VERSION} | gzip > wgcloud-server-${VERSION}-arm64-compiled.tar.gz
+          docker save wgcloud-server:${VERSION} | gzip > wgcloud-server-${VERSION}-arm64-official.jar.tar.gz
           echo "✅ 构建完成"
           ls -lh *.tar.gz
       
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wgcloud-server-${{ steps.version.outputs.version }}-arm64-compiled
+          name: wgcloud-server-${{ steps.version.outputs.version }}-arm64-official-jar
           path: wgcloud-server-*.tar.gz
           retention-days: 30
