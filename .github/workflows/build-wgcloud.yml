@@ -1,0 +1,91 @@
+name: Build WGCLOUD ARM64 Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'WGCLOUD版本号 (如 3.6.3，不带v前缀)'
+        required: true
+        default: '3.6.3'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    
+    steps:
+      - name: Checkout WGCLOUD source code
+        uses: actions/checkout@v4
+        with:
+          repository: tianshiyeben/wgcloud
+          fetch-depth: 1
+      
+      - name: Verify version exists
+        id: version
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          SOURCE_DIR="wgcloud-v${VERSION}"
+          
+          if [ ! -d "${SOURCE_DIR}" ]; then
+            echo "❌ 错误: 版本 ${VERSION} 不存在"
+            echo "可用的版本:"
+            ls -d wgcloud-v* 2>/dev/null || echo "未找到任何版本"
+            exit 1
+          fi
+          
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "✅ 使用版本: ${VERSION}"
+      
+      - name: Prepare build context
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          WGCLOUD_DIR="wgcloud-v${VERSION}"
+          
+          mkdir -p docker-build
+          cp -r ${WGCLOUD_DIR}/server/* docker-build/
+          mkdir -p docker-build/data docker-build/logs
+          
+          echo "✅ 构建上下文已准备"
+          ls -la docker-build/ | head -20
+      
+      - name: Create Dockerfile
+        run: |
+          cat > docker-build/Dockerfile << 'EOF'
+          # WGCLOUD Server for ARM64
+          FROM arm64v8/openjdk:8-jdk-slim
+          
+          LABEL maintainer="wgcloud"
+          LABEL description="WGCLOUD Monitoring Server for ARM64"
+          
+          WORKDIR /wgcloud-server
+          COPY . /wgcloud-server/
+          RUN chmod +x /wgcloud-server/start.sh
+          RUN mkdir -p /wgcloud-server/logs /wgcloud-server/data
+          
+          EXPOSE 9997 9998 9999
+          
+          CMD ["/bin/sh", "-c", "/wgcloud-server/start.sh && sleep 87600h"]
+          EOF
+          
+          echo "✅ Dockerfile 已创建"
+          cat docker-build/Dockerfile
+      
+      - name: Build Docker image
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          cd docker-build
+          docker build -t wgcloud-server:${VERSION} -t wgcloud-server:latest .
+          docker images
+      
+      - name: Save and compress image
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          docker save wgcloud-server:${VERSION} | gzip > wgcloud-server-${VERSION}-arm64.tar.gz
+          echo "✅ 构建完成，产物列表:"
+          ls -lh *.tar.gz
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wgcloud-server-${{ steps.version.outputs.version }}-arm64
+          path: wgcloud-server-*.tar.gz
+          retention-days: 30
