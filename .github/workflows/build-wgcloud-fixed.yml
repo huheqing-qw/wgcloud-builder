@@ -1,0 +1,159 @@
+name: Build WGCLOUD ARM64 Image (Fixed POM)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'WGCLOUD版本号 (如 3.6.3)'
+        required: true
+        default: '3.6.3'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    
+    steps:
+      - name: Set version
+        id: version
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "✅ 构建版本: v${VERSION}"
+      
+      - name: Checkout workflow repository
+        uses: actions/checkout@v4
+        with:
+          path: workflow-repo
+      
+      - name: Download WGCLOUD release source
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          wget https://github.com/tianshiyeben/wgcloud/archive/refs/tags/v${VERSION}.tar.gz
+          tar -xzf v${VERSION}.tar.gz
+          echo "✅ 源码下载完成"
+      
+      - name: Install Maven and JDK 8
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y maven openjdk-8-jdk-headless
+          echo "=== Java 版本 ==="
+          java -version
+          echo "=== Maven 版本 ==="
+          mvn -version
+      
+      - name: Replace pom.xml with fixed version
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          cd wgcloud-${VERSION}/wgcloud-server
+          
+          # 备份原文件
+          cp pom.xml pom.xml.original
+          
+          # 使用预处理的 pom.xml
+          cp ../../workflow-repo/wgcloud-server-pom.xml pom.xml
+          
+          echo "=== 新的 pom.xml 内容 ==="
+          head -30 pom.xml
+          
+          # 复制 src 目录（保留源码）
+          echo "源码目录内容:"
+          ls -la src/main/java/com/wgcloud/
+      
+      - name: Build WGCLOUD Server
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          cd wgcloud-${VERSION}/wgcloud-server
+          echo "开始编译 WGCLOUD Server..."
+          mvn clean package -DskipTests
+          echo "✅ 编译完成"
+          echo "=== 编译产物 ==="
+          ls -la target/
+      
+      - name: Find jar file
+        id: jar
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          cd wgcloud-${VERSION}/wgcloud-server/target
+          JAR_FILE=$(ls *.jar 2>/dev/null | grep -v original | head -1)
+          if [ -z "$JAR_FILE" ]; then
+            echo "❌ 未找到编译后的 jar 文件"
+            echo "target 目录内容:"
+            ls -la
+            exit 1
+          fi
+          echo "jar_file=${JAR_FILE}" >> $GITHUB_OUTPUT
+          echo "找到 jar 文件: ${JAR_FILE}"
+      
+      - name: Prepare Docker build context
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          JAR_FILE="${{ steps.jar.outputs.jar_file }}"
+          
+          mkdir -p docker-build
+          
+          cp wgcloud-${VERSION}/wgcloud-server/target/${JAR_FILE} docker-build/wgcloud-server.jar
+          
+          if [ -d "wgcloud-${VERSION}/wgcloud-server/src/main/resources" ]; then
+            cp -r wgcloud-${VERSION}/wgcloud-server/src/main/resources docker-build/config
+          fi
+          
+          mkdir -p docker-build/logs docker-build/data
+          
+          echo "✅ 构建上下文已准备"
+          ls -la docker-build/
+      
+      - name: Create Dockerfile
+        run: |
+          cat > docker-build/Dockerfile << 'EOF'
+          FROM arm64v8/openjdk:8-jdk-slim
+          
+          LABEL maintainer="wgcloud"
+          LABEL description="WGCLOUD Monitoring Server for ARM64"
+          
+          WORKDIR /wgcloud-server
+          
+          COPY wgcloud-server.jar /wgcloud-server/
+          COPY config /wgcloud-server/config/
+          
+          RUN mkdir -p /wgcloud-server/logs /wgcloud-server/data
+          
+          ENV TZ=Asia/Shanghai
+          RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+          
+          EXPOSE 9997 9998 9999
+          
+          CMD ["java", "-jar", "/wgcloud-server/wgcloud-server.jar", "--spring.config.location=/wgcloud-server/config/application.yml"]
+          EOF
+          
+          echo "✅ Dockerfile 已创建"
+      
+      - name: Build Docker image
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          cd docker-build
+          docker build -t wgcloud-server:${VERSION} -t wgcloud-server:latest .
+          docker images
+      
+      - name: Test container
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          docker run -d --name test-wgcloud -p 19999:9999 wgcloud-server:${VERSION}
+          sleep 15
+          echo "=== 测试容器日志 ==="
+          docker logs test-wgcloud --tail 30
+          docker stop test-wgcloud
+          docker rm test-wgcloud || true
+      
+      - name: Save and compress
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          docker save wgcloud-server:${VERSION} | gzip > wgcloud-server-${VERSION}-arm64-fixed-pom.tar.gz
+          echo "✅ 构建完成"
+          ls -lh *.tar.gz
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wgcloud-server-${{ steps.version.outputs.version }}-arm64-fixed-pom
+          path: wgcloud-server-*.tar.gz
+          retention-days: 30
