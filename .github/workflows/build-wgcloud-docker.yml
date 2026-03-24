@@ -38,10 +38,23 @@ jobs:
           # 复制源码
           COPY wgcloud-${VERSION}/wgcloud-server /build
           
-          # 移除 Oracle 和 SQL Server 依赖（临时方案）
-          RUN sed -i '/ojdbc/d' pom.xml && \
-              sed -i '/sqljdbc/d' pom.xml && \
-              sed -i '/oracle/d' pom.xml
+          # 使用 Python 精确删除 Oracle 和 SQL Server 依赖
+          RUN python3 -c "
+          import re
+          with open('pom.xml', 'r') as f:
+              content = f.read()
+          
+          # 删除包含 ojdbc 或 sqljdbc 的整个 dependency 块
+          pattern = r'<dependency>.*?(?:ojdbc|sqljdbc).*?</dependency>'
+          new_content = re.sub(pattern, '', content, flags=re.DOTALL)
+          
+          with open('pom.xml', 'w') as f:
+              f.write(new_content)
+          print('✅ 依赖已删除')
+          "
+          
+          # 验证 pom.xml 是否完整
+          RUN grep -q "<project" pom.xml && echo "✅ pom.xml 有效" || (echo "❌ pom.xml 损坏" && exit 1)
           
           # 编译
           RUN mvn clean package -DskipTests
@@ -70,7 +83,6 @@ jobs:
           # 替换版本号
           sed -i "s/\${VERSION}/$VERSION/g" Dockerfile
           echo "✅ Dockerfile 已创建"
-          cat Dockerfile
       
       - name: Build Docker image
         run: |
