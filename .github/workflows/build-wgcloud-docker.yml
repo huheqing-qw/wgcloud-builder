@@ -25,7 +25,28 @@ jobs:
           tar -xzf v${VERSION}.tar.gz
           echo "✅ 源码下载完成"
       
-      - name: Create Dockerfile with multi-stage build
+      - name: Create fix_pom.py script
+        run: |
+          cat > fix_pom.py << 'PYTHON_EOF'
+          import re
+          import sys
+          
+          with open('pom.xml', 'r', encoding='utf-8') as f:
+              content = f.read()
+          
+          # 删除包含 ojdbc 或 sqljdbc 的整个 dependency 块
+          pattern = r'<dependency>.*?(?:ojdbc|sqljdbc).*?</dependency>'
+          new_content = re.sub(pattern, '', content, flags=re.DOTALL)
+          
+          with open('pom.xml', 'w', encoding='utf-8') as f:
+              f.write(new_content)
+          
+          print("✅ 依赖已删除")
+          PYTHON_EOF
+          
+          echo "✅ fix_pom.py 已创建"
+      
+      - name: Create Dockerfile
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           
@@ -38,20 +59,11 @@ jobs:
           # 复制源码
           COPY wgcloud-${VERSION}/wgcloud-server /build
           
-          # 使用 Python 精确删除 Oracle 和 SQL Server 依赖
-          RUN python3 -c "
-          import re
-          with open('pom.xml', 'r') as f:
-              content = f.read()
+          # 复制修复脚本
+          COPY fix_pom.py /build/
           
-          # 删除包含 ojdbc 或 sqljdbc 的整个 dependency 块
-          pattern = r'<dependency>.*?(?:ojdbc|sqljdbc).*?</dependency>'
-          new_content = re.sub(pattern, '', content, flags=re.DOTALL)
-          
-          with open('pom.xml', 'w') as f:
-              f.write(new_content)
-          print('✅ 依赖已删除')
-          "
+          # 运行修复脚本
+          RUN python3 fix_pom.py
           
           # 验证 pom.xml 是否完整
           RUN grep -q "<project" pom.xml && echo "✅ pom.xml 有效" || (echo "❌ pom.xml 损坏" && exit 1)
