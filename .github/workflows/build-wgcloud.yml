@@ -40,6 +40,9 @@ jobs:
           # 正确路径：wgcloud-server 是子目录
           if [ -d "${SOURCE_DIR}/wgcloud-server" ]; then
             echo "✅ 找到 wgcloud-server 目录"
+            echo "=== wgcloud-server 目录内容 ==="
+            ls -la ${SOURCE_DIR}/wgcloud-server/
+            echo "=============================="
             cp -r ${SOURCE_DIR}/wgcloud-server/* docker-build/
           else
             echo "❌ 未找到 wgcloud-server 目录"
@@ -52,7 +55,8 @@ jobs:
           mkdir -p docker-build/data docker-build/logs
           
           echo "✅ 构建上下文已准备"
-          ls -la docker-build/ | head -20
+          echo "=== docker-build 目录内容 ==="
+          ls -la docker-build/
       
       - name: Create Dockerfile
         run: |
@@ -64,16 +68,32 @@ jobs:
           LABEL description="WGCLOUD Monitoring Server for ARM64"
           
           WORKDIR /wgcloud-server
+          
+          # 复制所有文件
           COPY . /wgcloud-server/
-          RUN chmod +x /wgcloud-server/start.sh
+          
+          # 查找并设置启动脚本权限
+          RUN if [ -f "/wgcloud-server/start.sh" ]; then \
+                chmod +x /wgcloud-server/start.sh; \
+              elif [ -f "/wgcloud-server/bin/start.sh" ]; then \
+                chmod +x /wgcloud-server/bin/start.sh; \
+              elif [ -f "/wgcloud-server/wgcloud-server-start.sh" ]; then \
+                chmod +x /wgcloud-server/wgcloud-server-start.sh; \
+              else \
+                echo "⚠️ 未找到启动脚本，将尝试直接运行 jar"; \
+                ls -la /wgcloud-server/; \
+              fi
+          
           RUN mkdir -p /wgcloud-server/logs /wgcloud-server/data
           
           EXPOSE 9997 9998 9999
           
-          CMD ["/bin/sh", "-c", "/wgcloud-server/start.sh && sleep 87600h"]
+          # 尝试多种启动方式
+          CMD ["/bin/sh", "-c", "if [ -f /wgcloud-server/start.sh ]; then /wgcloud-server/start.sh; elif [ -f /wgcloud-server/bin/start.sh ]; then /wgcloud-server/bin/start.sh; elif [ -f /wgcloud-server/wgcloud-server-start.sh ]; then /wgcloud-server/wgcloud-server-start.sh; else echo '启动 jar...' && java -jar /wgcloud-server/*.jar; fi && sleep 87600h"]
           EOF
           
           echo "✅ Dockerfile 已创建"
+          cat docker-build/Dockerfile
       
       - name: Build Docker image
         run: |
