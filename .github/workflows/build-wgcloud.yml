@@ -1,10 +1,10 @@
-name: Build WGCLOUD ARM64 Image from Release
+name: Build WGCLOUD ARM64 Image (Compiled)
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'WGCLOUD版本号 (如 3.6.3，不带v前缀)'
+        description: 'WGCLOUD版本号 (如 3.6.3)'
         required: true
         default: '3.6.3'
 
@@ -25,43 +25,44 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           wget https://github.com/tianshiyeben/wgcloud/archive/refs/tags/v${VERSION}.tar.gz
           tar -xzf v${VERSION}.tar.gz
-          echo "✅ 源码下载并解压完成"
-          echo "=== 根目录内容 ==="
-          ls -la wgcloud-${VERSION}/
+          echo "✅ 源码下载完成"
       
-      - name: Prepare build context
+      - name: Install Maven and JDK
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y maven openjdk-8-jdk-headless
+          java -version
+          mvn -version
+      
+      - name: Build WGCLOUD Server
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          SOURCE_DIR="wgcloud-${VERSION}"
-          
-          # 创建构建目录
+          cd wgcloud-${VERSION}/wgcloud-server
+          echo "开始编译 WGCLOUD Server..."
+          mvn clean package -DskipTests
+          echo "✅ 编译完成"
+          ls -la target/
+      
+      - name: Prepare Docker build context
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
           mkdir -p docker-build
           
-          # 正确路径：wgcloud-server 是子目录
-          if [ -d "${SOURCE_DIR}/wgcloud-server" ]; then
-            echo "✅ 找到 wgcloud-server 目录"
-            echo "=== wgcloud-server 目录内容 ==="
-            ls -la ${SOURCE_DIR}/wgcloud-server/
-            echo "=============================="
-            cp -r ${SOURCE_DIR}/wgcloud-server/* docker-build/
-          else
-            echo "❌ 未找到 wgcloud-server 目录"
-            echo "当前目录结构:"
-            ls -la ${SOURCE_DIR}/
-            exit 1
-          fi
+          # 复制编译后的文件
+          cp -r wgcloud-${VERSION}/wgcloud-server/target/wgcloud-server-${VERSION}.jar docker-build/
+          cp -r wgcloud-${VERSION}/wgcloud-server/start.sh docker-build/ 2>/dev/null || true
+          cp -r wgcloud-${VERSION}/wgcloud-server/bin docker-build/ 2>/dev/null || true
+          cp -r wgcloud-${VERSION}/wgcloud-server/config docker-build/ 2>/dev/null || true
           
-          # 创建数据目录
-          mkdir -p docker-build/data docker-build/logs
+          # 创建必要目录
+          mkdir -p docker-build/logs docker-build/data
           
           echo "✅ 构建上下文已准备"
-          echo "=== docker-build 目录内容 ==="
           ls -la docker-build/
       
       - name: Create Dockerfile
         run: |
           cat > docker-build/Dockerfile << 'EOF'
-          # WGCLOUD Server for ARM64
           FROM arm64v8/openjdk:8-jdk-slim
           
           LABEL maintainer="wgcloud"
@@ -69,31 +70,24 @@ jobs:
           
           WORKDIR /wgcloud-server
           
-          # 复制所有文件
-          COPY . /wgcloud-server/
+          # 复制编译好的 jar 文件
+          COPY *.jar /wgcloud-server/wgcloud-server.jar
           
-          # 查找并设置启动脚本权限
-          RUN if [ -f "/wgcloud-server/start.sh" ]; then \
-                chmod +x /wgcloud-server/start.sh; \
-              elif [ -f "/wgcloud-server/bin/start.sh" ]; then \
-                chmod +x /wgcloud-server/bin/start.sh; \
-              elif [ -f "/wgcloud-server/wgcloud-server-start.sh" ]; then \
-                chmod +x /wgcloud-server/wgcloud-server-start.sh; \
-              else \
-                echo "⚠️ 未找到启动脚本，将尝试直接运行 jar"; \
-                ls -la /wgcloud-server/; \
-              fi
+          # 复制配置和脚本（如果存在）
+          COPY config /wgcloud-server/config/
+          COPY bin /wgcloud-server/bin/ 2>/dev/null || true
+          COPY start.sh /wgcloud-server/ 2>/dev/null || true
           
+          # 创建目录
           RUN mkdir -p /wgcloud-server/logs /wgcloud-server/data
           
           EXPOSE 9997 9998 9999
           
-          # 尝试多种启动方式
-          CMD ["/bin/sh", "-c", "if [ -f /wgcloud-server/start.sh ]; then /wgcloud-server/start.sh; elif [ -f /wgcloud-server/bin/start.sh ]; then /wgcloud-server/bin/start.sh; elif [ -f /wgcloud-server/wgcloud-server-start.sh ]; then /wgcloud-server/wgcloud-server-start.sh; else echo '启动 jar...' && java -jar /wgcloud-server/*.jar; fi && sleep 87600h"]
+          # 启动命令
+          CMD ["java", "-jar", "/wgcloud-server/wgcloud-server.jar", "--spring.config.location=/wgcloud-server/config/application.yml"]
           EOF
           
           echo "✅ Dockerfile 已创建"
-          cat docker-build/Dockerfile
       
       - name: Build Docker image
         run: |
@@ -105,13 +99,13 @@ jobs:
       - name: Save and compress image
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          docker save wgcloud-server:${VERSION} | gzip > wgcloud-server-${VERSION}-arm64.tar.gz
-          echo "✅ 构建完成，产物列表:"
+          docker save wgcloud-server:${VERSION} | gzip > wgcloud-server-${VERSION}-arm64-compiled.tar.gz
+          echo "✅ 构建完成"
           ls -lh *.tar.gz
       
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wgcloud-server-${{ steps.version.outputs.version }}-arm64
+          name: wgcloud-server-${{ steps.version.outputs.version }}-arm64-compiled
           path: wgcloud-server-*.tar.gz
           retention-days: 30
