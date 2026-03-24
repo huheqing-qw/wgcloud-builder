@@ -1,4 +1,4 @@
-name: Build WGCLOUD ARM64 Image (Fixed POM)
+name: Build WGCLOUD ARM64 Image (Original POM)
 
 on:
   workflow_dispatch:
@@ -20,11 +20,6 @@ jobs:
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "✅ 构建版本: v${VERSION}"
       
-      - name: Checkout workflow repository
-        uses: actions/checkout@v4
-        with:
-          path: workflow-repo
-      
       - name: Download WGCLOUD release source
         run: |
           VERSION="${{ steps.version.outputs.version }}"
@@ -41,7 +36,7 @@ jobs:
           echo "=== Maven 版本 ==="
           mvn -version
       
-      - name: Replace pom.xml with fixed version
+      - name: Remove only Oracle and SQL Server dependencies from pom.xml
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           cd wgcloud-${VERSION}/wgcloud-server
@@ -49,15 +44,41 @@ jobs:
           # 备份原文件
           cp pom.xml pom.xml.original
           
-          # 使用预处理的 pom.xml
-          cp ../../workflow-repo/wgcloud-server-pom.xml pom.xml
+          # 显示原始依赖
+          echo "=== 原始 Oracle/SQL Server 依赖 ==="
+          grep -n -B 5 -A 10 "ojdbc\|sqljdbc" pom.xml || echo "未找到"
           
-          echo "=== 新的 pom.xml 内容 ==="
-          head -30 pom.xml
+          # 使用更精确的方法：找到并删除包含 ojdbc 或 sqljdbc 的整个 dependency 块
+          # 使用 Python 确保精确删除
+          python3 << 'PYTHON_SCRIPT'
+import re
+
+with open('pom.xml', 'r', encoding='utf-8') as f:
+    content = f.read()
+
+# 匹配 <dependency> 到 </dependency> 的块
+pattern = r'<dependency>\s*<groupId>.*?</groupId>\s*<artifactId>.*?(?:ojdbc|sqljdbc).*?</artifactId>.*?</dependency>'
+new_content = re.sub(pattern, '', content, flags=re.DOTALL)
+
+# 同时匹配另一种格式
+pattern2 = r'<dependency>\s*<groupId>com\.oracle</groupId>.*?</dependency>'
+new_content = re.sub(pattern2, '', new_content, flags=re.DOTALL)
+
+pattern3 = r'<dependency>\s*<groupId>com\.microsoft\.sqlserver</groupId>.*?</dependency>'
+new_content = re.sub(pattern3, '', new_content, flags=re.DOTALL)
+
+with open('pom.xml', 'w', encoding='utf-8') as f:
+    f.write(new_content)
+
+print("✅ 依赖删除完成")
+PYTHON_SCRIPT
           
-          # 复制 src 目录（保留源码）
-          echo "源码目录内容:"
-          ls -la src/main/java/com/wgcloud/
+          # 验证
+          echo "=== 删除后检查 ==="
+          grep -i "ojdbc\|sqljdbc" pom.xml || echo "✅ 依赖已成功删除"
+          
+          # 显示修改后的文件大小
+          wc -l pom.xml
       
       - name: Build WGCLOUD Server
         run: |
@@ -147,13 +168,13 @@ jobs:
       - name: Save and compress
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          docker save wgcloud-server:${VERSION} | gzip > wgcloud-server-${VERSION}-arm64-fixed-pom.tar.gz
+          docker save wgcloud-server:${VERSION} | gzip > wgcloud-server-${VERSION}-arm64-final.tar.gz
           echo "✅ 构建完成"
           ls -lh *.tar.gz
       
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wgcloud-server-${{ steps.version.outputs.version }}-arm64-fixed-pom
+          name: wgcloud-server-${{ steps.version.outputs.version }}-arm64-final
           path: wgcloud-server-*.tar.gz
           retention-days: 30
