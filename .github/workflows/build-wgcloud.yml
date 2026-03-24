@@ -23,10 +23,10 @@ jobs:
       - name: Download WGCLOUD release source
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          # 下载 Release 源码包
           wget https://github.com/tianshiyeben/wgcloud/archive/refs/tags/v${VERSION}.tar.gz
           tar -xzf v${VERSION}.tar.gz
           echo "✅ 源码下载并解压完成"
+          echo "=== 根目录内容 ==="
           ls -la wgcloud-${VERSION}/
       
       - name: Prepare build context
@@ -37,8 +37,16 @@ jobs:
           # 创建构建目录
           mkdir -p docker-build
           
-          # 复制 server 目录（Release 包中 server 在根目录）
-          cp -r ${SOURCE_DIR}/server/* docker-build/
+          # 正确路径：wgcloud-server 是子目录
+          if [ -d "${SOURCE_DIR}/wgcloud-server" ]; then
+            echo "✅ 找到 wgcloud-server 目录"
+            cp -r ${SOURCE_DIR}/wgcloud-server/* docker-build/
+          else
+            echo "❌ 未找到 wgcloud-server 目录"
+            echo "当前目录结构:"
+            ls -la ${SOURCE_DIR}/
+            exit 1
+          fi
           
           # 创建数据目录
           mkdir -p docker-build/data docker-build/logs
